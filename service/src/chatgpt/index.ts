@@ -2,6 +2,7 @@ import * as dotenv from 'dotenv'
 import 'isomorphic-fetch'
 import type { ChatGPTAPIOptions, ChatMessage, SendMessageOptions } from 'chatgpt'
 import { ChatGPTAPI, ChatGPTUnofficialProxyAPI } from 'chatgpt'
+import { AzureKeyCredential, OpenAIClient as AzureOpenAIClient } from '@azure/openai'
 import { SocksProxyAgent } from 'socks-proxy-agent'
 import httpsProxyAgent from 'https-proxy-agent'
 import fetch from 'node-fetch'
@@ -32,10 +33,12 @@ const model = isNotEmptyString(process.env.OPENAI_API_MODEL) ? process.env.OPENA
 if (!isNotEmptyString(process.env.OPENAI_API_KEY) && !isNotEmptyString(process.env.OPENAI_ACCESS_TOKEN))
   throw new Error('Missing OPENAI_API_KEY or OPENAI_ACCESS_TOKEN environment variable')
 
-let api: ChatGPTAPI | ChatGPTUnofficialProxyAPI
+let api: ChatGPTAPI | ChatGPTUnofficialProxyAPI | AzureOpenAIClient
 
 (async () => {
-  // More Info: https://github.com/transitive-bullshit/chatgpt-api
+  // More Info:
+  //   https://github.com/transitive-bullshit/chatgpt-api
+  //   https://learn.microsoft.com/azure/cognitive-services/openai/overview
 
   if (isNotEmptyString(process.env.OPENAI_API_KEY)) {
     const OPENAI_API_BASE_URL = process.env.OPENAI_API_BASE_URL
@@ -66,6 +69,12 @@ let api: ChatGPTAPI | ChatGPTUnofficialProxyAPI
 
     api = new ChatGPTAPI({ ...options })
     apiModel = 'ChatGPTAPI'
+
+    if (OPENAI_API_BASE_URL.toLowerCase().includes('openai.azure.com')) {
+      api = new AzureOpenAIClient(OPENAI_API_BASE_URL, new AzureKeyCredential(process.env.OPENAI_API_KEY))
+      apiModel = 'AzureChatGPTAPI'
+      options.completionParams.model = 'gpt-35-turbo'
+    }
   }
   else {
     const options: ChatGPTUnofficialProxyAPIOptions = {
