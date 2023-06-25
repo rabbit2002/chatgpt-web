@@ -1,15 +1,19 @@
 import * as dotenv from 'dotenv'
 import 'isomorphic-fetch'
+
 import type { ChatGPTAPIOptions, ChatMessage, SendMessageOptions } from 'chatgpt'
 import { ChatGPTAPI, ChatGPTUnofficialProxyAPI } from 'chatgpt'
+
+import type { OpenAIClientOptions as AzureOpenAIClientOptions } from '@azure/openai'
 import { AzureKeyCredential, OpenAIClient as AzureOpenAIClient } from '@azure/openai'
+
 import { SocksProxyAgent } from 'socks-proxy-agent'
 import httpsProxyAgent from 'https-proxy-agent'
 import fetch from 'node-fetch'
 import { sendResponse } from '../utils'
 import { isNotEmptyString } from '../utils/is'
 import type { ApiModel, ChatContext, ChatGPTUnofficialProxyAPIOptions, ModelConfig } from '../types'
-import type { RequestOptions, SetProxyOptions, UsageResponse } from './types'
+import type { AzureRequestOptions, OpenaiRequestOptions, SetProxyOptions, UsageResponse } from './types'
 
 const { HttpsProxyAgent } = httpsProxyAgent
 
@@ -27,12 +31,14 @@ const ErrorCodeMessage: Record<string, string> = {
 const timeoutMs: number = !isNaN(+process.env.TIMEOUT_MS) ? +process.env.TIMEOUT_MS : 100 * 1000
 const disableDebug: boolean = process.env.OPENAI_API_DISABLE_DEBUG === 'true'
 
-let apiModel: ApiModel
-const model = isNotEmptyString(process.env.OPENAI_API_MODEL) ? process.env.OPENAI_API_MODEL : 'gpt-3.5-turbo'
-
 if (!isNotEmptyString(process.env.OPENAI_API_KEY) && !isNotEmptyString(process.env.OPENAI_ACCESS_TOKEN))
   throw new Error('Missing OPENAI_API_KEY or OPENAI_ACCESS_TOKEN environment variable')
 
+const OPENAI_API_BASE_URL = process.env.OPENAI_API_BASE_URL
+const isAzureApi = OPENAI_API_BASE_URL.toLowerCase().includes('openai.azure.com')
+
+let apiModel: ApiModel
+const model = isNotEmptyString(process.env.OPENAI_API_MODEL) ? process.env.OPENAI_API_MODEL : isAzureApi ? 'gpt-35-turbo' : 'gpt-3.5-turbo'
 let api: ChatGPTAPI | ChatGPTUnofficialProxyAPI | AzureOpenAIClient
 
 (async () => {
@@ -41,8 +47,15 @@ let api: ChatGPTAPI | ChatGPTUnofficialProxyAPI | AzureOpenAIClient
   //   https://learn.microsoft.com/azure/cognitive-services/openai/overview
 
   if (isNotEmptyString(process.env.OPENAI_API_KEY)) {
-    const OPENAI_API_BASE_URL = process.env.OPENAI_API_BASE_URL
+    // Azure API
+    if (isAzureApi) {
+      const options: AzureOpenAIClientOptions = {
+      }
 
+      apiModel = 'AzureChatGPTAPI'
+      return api = new AzureOpenAIClient(OPENAI_API_BASE_URL, new AzureKeyCredential(process.env.OPENAI_API_KEY), options)
+    }
+    // OpenAI API
     const options: ChatGPTAPIOptions = {
       apiKey: process.env.OPENAI_API_KEY,
       completionParams: { model },
@@ -75,12 +88,6 @@ let api: ChatGPTAPI | ChatGPTUnofficialProxyAPI | AzureOpenAIClient
 
     api = new ChatGPTAPI({ ...options })
     apiModel = 'ChatGPTAPI'
-
-    if (OPENAI_API_BASE_URL.toLowerCase().includes('openai.azure.com')) {
-      api = new AzureOpenAIClient(OPENAI_API_BASE_URL, new AzureKeyCredential(process.env.OPENAI_API_KEY))
-      apiModel = 'AzureChatGPTAPI'
-      options.completionParams.model = 'gpt-35-turbo'
-    }
   }
   else {
     const options: ChatGPTUnofficialProxyAPIOptions = {
@@ -97,15 +104,22 @@ let api: ChatGPTAPI | ChatGPTUnofficialProxyAPI | AzureOpenAIClient
   }
 })()
 
-async function chatReplyProcess(options: RequestOptions) {
-  const { message, lastContext, process, systemMessage, temperature, top_p } = options
+async function chatReplyProcess(options: OpenaiRequestOptions | AzureRequestOptions) {
+  const { message, lastContext, process: openaiProcess, systemMessage, temperature: openaiTemperature, top_p } = options as OpenaiRequestOptions
+  const { AzureChatMessage } = options as AzureRequestOptions
+
   try {
+    if (apiModel === 'AzureChatGPTAPI') {
+      // FIXME: Get the AzureChatMessage property
+      const response = await (api as AzureOpenAIClient).getChatCompletions(process.env.OPENAI_API_DEPLOYMENTID, AzureChatMessage, {})
+      return sendResponse({ type: 'Success', data: response })
+    }
     let options: SendMessageOptions = { timeoutMs }
 
     if (apiModel === 'ChatGPTAPI') {
       if (isNotEmptyString(systemMessage))
         options.systemMessage = systemMessage
-      options.completionParams = { model, temperature, top_p }
+      options.completionParams = { model, temperature: openaiTemperature, top_p }
     }
 
     if (lastContext != null) {
@@ -115,10 +129,10 @@ async function chatReplyProcess(options: RequestOptions) {
         options = { ...lastContext }
     }
 
-    const response = await api.sendMessage(message, {
+    const response = await (api as ChatGPTAPI | ChatGPTUnofficialProxyAPI).sendMessage(message, {
       ...options,
       onProgress: (partialResponse) => {
-        process?.(partialResponse)
+        openaiProcess?.(partialResponse)
       },
     })
 
